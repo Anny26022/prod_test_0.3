@@ -342,6 +342,7 @@ export const TradeJournal = React.memo(function TradeJournal({
   const [selectedTrade, setSelectedTrade] = React.useState<Trade | null>(null);
   const [page, setPage] = React.useState(1);
   const [optimisticUpdates, setOptimisticUpdates] = React.useState<Map<string, Partial<Trade>>>(new Map());
+  const [isActionsEditMode, setIsActionsEditMode] = React.useState(false);
 
   // Chart image viewer state
   const [chartViewerImage, setChartViewerImage] = React.useState<ChartImage | null>(null);
@@ -524,6 +525,7 @@ export const TradeJournal = React.memo(function TradeJournal({
 
   const handleEdit = (trade: Trade) => {
     setSelectedTrade(trade);
+    setIsActionsEditMode(true); // Set actions edit mode when editing from actions tab
     onEditOpen();
   };
 
@@ -536,6 +538,7 @@ export const TradeJournal = React.memo(function TradeJournal({
   const handleEditModalClose = (isOpen: boolean) => {
     if (!isOpen) {
       setIsUploadOnlyMode(false);
+      setIsActionsEditMode(false); // Reset actions edit mode when modal closes
     }
     onEditOpenChange(isOpen);
   };
@@ -3321,6 +3324,7 @@ export const TradeJournal = React.memo(function TradeJournal({
               mode="edit"
               symbol={selectedTrade?.name || ''}
               isUploadOnlyMode={isUploadOnlyMode}
+              isActionsEditMode={isActionsEditMode}
             />
 
             <DeleteConfirmModal

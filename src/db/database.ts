@@ -219,6 +219,16 @@ export class DatabaseService {
     }
   }
 
+  static async getTrade(id: string): Promise<TradeRecord | null> {
+    try {
+      const trade = await db.trades.get(id);
+      return trade || null;
+    } catch (error) {
+      console.error('❌ Failed to get trade from IndexedDB:', error);
+      return null;
+    }
+  }
+
   static async saveTrade(trade: TradeRecord): Promise<boolean> {
     try {
       // Clean trade data to ensure it's serializable

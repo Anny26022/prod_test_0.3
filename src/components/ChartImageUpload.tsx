@@ -67,20 +67,29 @@ export const ChartImageUpload: React.FC<ChartImageUploadProps> = ({
   
   // Load preview URL for current image
   React.useEffect(() => {
+    console.log(`🖼️ [${imageType}] ChartImageUpload currentImage changed:`, currentImage ? `${currentImage.filename} (${currentImage.id})` : 'null');
+
     if (currentImage) {
       // If the image already has a dataUrl (loaded from database), use it directly
       if (currentImage.dataUrl) {
         setPreviewUrl(currentImage.dataUrl);
+        console.log(`🖼️ [${imageType}] Using existing dataUrl for preview`);
       } else {
         // Otherwise, fetch from service
+        console.log(`🖼️ [${imageType}] Fetching dataUrl from service`);
         ChartImageService.getChartImageDataUrl(currentImage).then(url => {
           setPreviewUrl(url);
+          console.log(`🖼️ [${imageType}] Preview URL loaded from service`);
+        }).catch(error => {
+          console.error(`❌ [${imageType}] Failed to load preview URL:`, error);
+          setPreviewUrl(null);
         });
       }
     } else {
+      console.log(`🖼️ [${imageType}] No current image, clearing preview`);
       setPreviewUrl(null);
     }
-  }, [currentImage]);
+  }, [currentImage, imageType]);
   
   // Cleanup preview URL on unmount
   React.useEffect(() => {
@@ -329,18 +338,22 @@ export const ChartImageUpload: React.FC<ChartImageUploadProps> = ({
   
   const handleDelete = useCallback(async () => {
     if (!currentImage || disabled) return;
-    
+
+    console.log(`🗑️ [${imageType}] Starting deletion of chart image:`, currentImage.filename);
+
     try {
       const success = await ChartImageService.deleteChartImage(tradeId, imageType, currentImage);
       if (success) {
+        console.log(`🗑️ [${imageType}] Chart image service deletion successful, calling onImageDeleted`);
         onImageDeleted();
-        console.log(`✅ ${title} deleted successfully`);
+        console.log(`✅ [${imageType}] ${title} deleted successfully`);
       } else {
+        console.error(`❌ [${imageType}] Chart image service deletion failed`);
         setError('Failed to delete image');
       }
     } catch (error) {
+      console.error(`❌ [${imageType}] Chart image delete error:`, error);
       setError(error instanceof Error ? error.message : 'Delete failed');
-      console.error('❌ Chart image delete error:', error);
     }
   }, [currentImage, tradeId, imageType, onImageDeleted, disabled, title]);
   

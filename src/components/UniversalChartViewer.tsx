@@ -167,6 +167,17 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
     setLoadingProgress(0);
 
     try {
+      // Perform cleanup of orphaned chart data before loading
+      try {
+        const { ChartImageService } = await import('../services/chartImageService');
+        const cleanupResult = await ChartImageService.cleanupAllOrphanedData();
+        if (cleanupResult.blobsCleaned > 0 || cleanupResult.attachmentsCleaned > 0) {
+          console.log(`🧹 Cleaned up ${cleanupResult.blobsCleaned} orphaned blobs and ${cleanupResult.attachmentsCleaned} orphaned attachments`);
+        }
+      } catch (cleanupError) {
+        console.warn('⚠️ Failed to cleanup orphaned chart data:', cleanupError);
+      }
+
       // Load both blob storage and inline storage charts
       const [blobImages, allTrades] = await Promise.all([
         DatabaseService.getAllChartImageBlobsWithTradeInfo(),
@@ -184,16 +195,29 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
         setLoadingProgress((processedCount / totalItems) * 100);
 
         try {
-          const dataUrl = await new Promise<string>((resolve) => {
+          // Validate that the blob data exists and is valid
+          if (!image.data || image.data.size === 0) {
+            console.warn(`Skipping invalid blob image ${image.filename}: no data`);
+            processedCount++;
+            continue;
+          }
+
+          const dataUrl = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => reject(new Error('Failed to read blob'));
             reader.readAsDataURL(image.data);
           });
 
-          imagesWithDataUrls.push({
-            ...image,
-            dataUrl
-          });
+          // Validate that the data URL was created successfully
+          if (dataUrl && dataUrl.startsWith('data:')) {
+            imagesWithDataUrls.push({
+              ...image,
+              dataUrl
+            });
+          } else {
+            console.warn(`Skipping invalid blob image ${image.filename}: invalid data URL`);
+          }
         } catch (err) {
           console.error(`Failed to load blob image ${image.filename}:`, err);
         }
@@ -211,60 +235,74 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
             if (trade.chartAttachments.beforeEntry?.storage === 'inline' && trade.chartAttachments.beforeEntry.data) {
               const chartImage = trade.chartAttachments.beforeEntry;
 
-              const dataUrl = `data:${chartImage.mimeType};base64,${chartImage.data}`;
+              // Validate that the chart image has all required properties
+              if (chartImage.id && chartImage.filename && chartImage.mimeType && chartImage.data) {
+                const dataUrl = `data:${chartImage.mimeType};base64,${chartImage.data}`;
 
-              imagesWithDataUrls.push({
-                id: chartImage.id,
-                tradeId: trade.id,
-                imageType: 'beforeEntry',
-                filename: chartImage.filename,
-                mimeType: chartImage.mimeType,
-                size: chartImage.size,
-                data: new Blob(), // Not used for inline
-                uploadedAt: new Date(chartImage.uploadedAt),
-                compressed: chartImage.compressed || false,
-                originalSize: chartImage.originalSize,
-                tradeName: trade.name,
-                tradeDate: trade.date,
-                tradeNo: Number(trade.tradeNo),
-                dataUrl
-              });
+                imagesWithDataUrls.push({
+                  id: chartImage.id,
+                  tradeId: trade.id,
+                  imageType: 'beforeEntry',
+                  filename: chartImage.filename,
+                  mimeType: chartImage.mimeType,
+                  size: chartImage.size,
+                  data: new Blob(), // Not used for inline
+                  uploadedAt: new Date(chartImage.uploadedAt),
+                  compressed: chartImage.compressed || false,
+                  originalSize: chartImage.originalSize,
+                  tradeName: trade.name,
+                  tradeDate: trade.date,
+                  tradeNo: Number(trade.tradeNo),
+                  dataUrl
+                });
+              }
             }
 
             // Process afterExit chart if it exists and uses inline storage
             if (trade.chartAttachments.afterExit?.storage === 'inline' && trade.chartAttachments.afterExit.data) {
               const chartImage = trade.chartAttachments.afterExit;
 
-              const dataUrl = `data:${chartImage.mimeType};base64,${chartImage.data}`;
+              // Validate that the chart image has all required properties
+              if (chartImage.id && chartImage.filename && chartImage.mimeType && chartImage.data) {
+                const dataUrl = `data:${chartImage.mimeType};base64,${chartImage.data}`;
 
-              imagesWithDataUrls.push({
-                id: chartImage.id,
-                tradeId: trade.id,
-                imageType: 'afterExit',
-                filename: chartImage.filename,
-                mimeType: chartImage.mimeType,
-                size: chartImage.size,
-                data: new Blob(), // Not used for inline
-                uploadedAt: new Date(chartImage.uploadedAt),
-                compressed: chartImage.compressed || false,
-                originalSize: chartImage.originalSize,
-                tradeName: trade.name,
-                tradeDate: trade.date,
-                tradeNo: Number(trade.tradeNo),
-                dataUrl
-              });
+                imagesWithDataUrls.push({
+                  id: chartImage.id,
+                  tradeId: trade.id,
+                  imageType: 'afterExit',
+                  filename: chartImage.filename,
+                  mimeType: chartImage.mimeType,
+                  size: chartImage.size,
+                  data: new Blob(), // Not used for inline
+                  uploadedAt: new Date(chartImage.uploadedAt),
+                  compressed: chartImage.compressed || false,
+                  originalSize: chartImage.originalSize,
+                  tradeName: trade.name,
+                  tradeDate: trade.date,
+                  tradeNo: Number(trade.tradeNo),
+                  dataUrl
+                });
+              }
             }
           }
         } catch (error) {
-          // Silently skip trades with errors
+          console.warn(`Failed to process chart attachments for trade ${trade.id}:`, error);
         }
         processedCount++;
       }
 
 
 
+      // Deduplicate images by ID (in case same image exists in both blob and inline storage)
+      const uniqueImages = new Map<string, ChartImageWithContext>();
+      imagesWithDataUrls.forEach(image => {
+        if (!uniqueImages.has(image.id)) {
+          uniqueImages.set(image.id, image);
+        }
+      });
+
       // Sort images: beforeEntry first, then afterExit, then by trade date
-      const sortedImages = imagesWithDataUrls.sort((a, b) => {
+      const sortedImages = Array.from(uniqueImages.values()).sort((a, b) => {
         // First sort by image type: beforeEntry (0) comes before afterExit (1)
         const typeOrder = { beforeEntry: 0, afterExit: 1 };
         const typeComparison = typeOrder[a.imageType] - typeOrder[b.imageType];
@@ -426,6 +464,7 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
                             setShowSymbolDropdown(false);
                           }}
                           className="w-4 h-4 min-w-4"
+                          aria-label="Clear search"
                         >
                           <Icon icon="lucide:x" className="w-3 h-3" />
                         </Button>
@@ -499,6 +538,7 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
                     onPress={navigatePrevious}
                     isDisabled={currentIndex <= 0}
                     className="w-8 h-8 min-w-8"
+                    aria-label="Previous image"
                   >
                     <Icon icon="lucide:chevron-left" className="w-4 h-4" />
                   </Button>
@@ -510,6 +550,7 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
                     onPress={navigateNext}
                     isDisabled={currentIndex >= filteredImages.length - 1}
                     className="w-8 h-8 min-w-8"
+                    aria-label="Next image"
                   >
                     <Icon icon="lucide:chevron-right" className="w-4 h-4" />
                   </Button>
@@ -524,6 +565,7 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
                     onPress={handleZoomOut}
                     isDisabled={zoom <= 0.5}
                     className="w-7 h-7 min-w-7"
+                    aria-label="Zoom out"
                   >
                     <Icon icon="lucide:zoom-out" className="w-4 h-4" />
                   </Button>
@@ -539,6 +581,7 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
                     onPress={handleZoomIn}
                     isDisabled={zoom >= 5}
                     className="w-7 h-7 min-w-7"
+                    aria-label="Zoom in"
                   >
                     <Icon icon="lucide:zoom-in" className="w-4 h-4" />
                   </Button>
@@ -549,6 +592,7 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
                     size="md"
                     onPress={resetZoom}
                     className="w-7 h-7 min-w-7"
+                    aria-label="Reset zoom"
                   >
                     <Icon icon="lucide:maximize" className="w-4 h-4" />
                   </Button>
@@ -562,6 +606,7 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
                   onPress={downloadCurrentImage}
                   isDisabled={!currentImage?.dataUrl}
                   className="w-8 h-8 min-w-8"
+                  aria-label="Download image"
                 >
                   <Icon icon="lucide:download" className="w-4 h-4" />
                 </Button>
@@ -572,6 +617,7 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
                   size="md"
                   onPress={onClose}
                   className="w-8 h-8 min-w-8"
+                  aria-label="Close viewer"
                 >
                   <Icon icon="lucide:x" className="w-4 h-4" />
                 </Button>
@@ -647,6 +693,7 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
                       onPress={navigatePrevious}
                       isDisabled={currentIndex <= 0}
                       className="ml-4 bg-black/20 hover:bg-black/40 text-white backdrop-blur-sm"
+                      aria-label="Previous image"
                     >
                       <Icon icon="lucide:chevron-left" className="w-6 h-6" />
                     </Button>
@@ -660,6 +707,7 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
                       onPress={navigateNext}
                       isDisabled={currentIndex >= filteredImages.length - 1}
                       className="mr-4 bg-black/20 hover:bg-black/40 text-white backdrop-blur-sm"
+                      aria-label="Next image"
                     >
                       <Icon icon="lucide:chevron-right" className="w-6 h-6" />
                     </Button>

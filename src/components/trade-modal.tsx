@@ -74,6 +74,7 @@ import * as Papa from "papaparse"; // Centralized import
     mode: "add" | "edit";
     symbol?: string;
     isUploadOnlyMode?: boolean;
+    isActionsEditMode?: boolean; // New prop for actions tab edit mode
   }
 
   type TradeModalFormData = Trade & { slPercent: number };
@@ -238,6 +239,7 @@ import * as Papa from "papaparse"; // Centralized import
     mode,
     symbol: initialSymbol = "",
     isUploadOnlyMode = false,
+    isActionsEditMode = false,
   }) => {
     console.log("[TradeModal] Initial Symbol:", initialSymbol); // Log initial symbol
 
@@ -326,6 +328,11 @@ import * as Papa from "papaparse"; // Centralized import
       return 'charts';
     }
 
+    // If in actions edit mode, always start with basic tab (charts disabled)
+    if (isActionsEditMode) {
+      return 'basic';
+    }
+
     if (typeof window !== 'undefined') {
       const saved = sessionStorage.getItem(sessionKey + '_activeTab');
       if (saved) return saved;
@@ -333,12 +340,24 @@ import * as Papa from "papaparse"; // Centralized import
     return 'basic';
   });
 
-  // Reset to charts tab when entering upload-only mode
+  // Chart viewer and refresh state - declare early to avoid initialization issues
+  const [chartViewerImage, setChartViewerImage] = React.useState<ChartImage | null>(null);
+  const [isChartViewerOpen, setIsChartViewerOpen] = React.useState(false);
+  const [isUniversalViewerOpen, setIsUniversalViewerOpen] = React.useState(false);
+  const [chartRefreshTrigger, setChartRefreshTrigger] = React.useState(0);
+
+  // Reset tabs when entering special modes
   React.useEffect(() => {
     if (isUploadOnlyMode) {
       setActiveTab('charts');
+      // Trigger chart refresh to ensure latest data is shown
+      setChartRefreshTrigger(prev => prev + 1);
+      console.log('🔄 Upload-only mode activated, triggering chart refresh');
+    } else if (isActionsEditMode) {
+      setActiveTab('basic');
+      console.log('🔄 Actions edit mode activated, charts tab disabled');
     }
-  }, [isUploadOnlyMode]);
+  }, [isUploadOnlyMode, isActionsEditMode]);
 
   // Chart attachment state
   const [chartAttachments, setChartAttachments] = React.useState<TradeChartAttachments>(() => {
@@ -370,11 +389,24 @@ import * as Papa from "papaparse"; // Centralized import
 
       try {
         const { DatabaseService } = await import('../db/database');
-        const blobs = await DatabaseService.getTradeChartImageBlobs(trade.id);
 
+        // Always reload from database to get the latest state
+        // This is especially important in upload-only mode to reflect any deletions
+        const [blobs, currentTrade] = await Promise.all([
+          DatabaseService.getTradeChartImageBlobs(trade.id),
+          DatabaseService.getTrade(trade.id)
+        ]);
+
+        // Start with the current trade's chart attachments (if any)
+        let attachments: TradeChartAttachments = {};
+
+        // If the trade has inline chart attachments, include them
+        if (currentTrade?.chartAttachments) {
+          attachments = { ...currentTrade.chartAttachments };
+        }
+
+        // Process blob storage images and add/update them
         if (blobs.length > 0) {
-          const attachments: TradeChartAttachments = {};
-
           for (const blob of blobs) {
             // Create a proper data URL from the blob
             const dataUrl = await new Promise<string>((resolve) => {
@@ -391,21 +423,26 @@ import * as Papa from "papaparse"; // Centralized import
               dataUrl: dataUrl,
               uploadedAt: blob.uploadedAt,
               compressed: blob.compressed,
-              originalSize: blob.originalSize
+              originalSize: blob.originalSize,
+              storage: 'blob',
+              blobId: blob.id
             };
 
             attachments[blob.imageType] = chartImage;
           }
+        }
 
-          // Calculate metadata
-          const totalSize = blobs.reduce((sum, blob) => sum + blob.size, 0);
-          const oldestUpload = blobs.reduce((oldest, blob) =>
-            blob.uploadedAt < oldest ? blob.uploadedAt : oldest,
-            blobs[0]?.uploadedAt || new Date()
+        // Calculate metadata if we have any attachments
+        if (attachments.beforeEntry || attachments.afterExit) {
+          const allImages = [attachments.beforeEntry, attachments.afterExit].filter(Boolean) as ChartImage[];
+          const totalSize = allImages.reduce((sum, img) => sum + img.size, 0);
+          const oldestUpload = allImages.reduce((oldest, img) =>
+            img.uploadedAt < oldest ? img.uploadedAt : oldest,
+            allImages[0]?.uploadedAt || new Date()
           );
-          const newestUpload = blobs.reduce((newest, blob) =>
-            blob.uploadedAt > newest ? blob.uploadedAt : newest,
-            blobs[0]?.uploadedAt || new Date()
+          const newestUpload = allImages.reduce((newest, img) =>
+            img.uploadedAt > newest ? img.uploadedAt : newest,
+            allImages[0]?.uploadedAt || new Date()
           );
 
           attachments.metadata = {
@@ -413,9 +450,10 @@ import * as Papa from "papaparse"; // Centralized import
             updatedAt: newestUpload,
             totalSize
           };
-
-          setChartAttachments(attachments);
         }
+
+        setChartAttachments(attachments);
+        console.log(`📸 Loaded chart attachments for trade ${trade.id}:`, attachments);
       } catch (error) {
         console.error('Failed to load chart image blobs:', error);
       }
@@ -424,11 +462,7 @@ import * as Papa from "papaparse"; // Centralized import
     if (isOpen && trade?.id) {
       loadChartImageBlobs();
     }
-  }, [isOpen, trade?.id]);
-  const [chartViewerImage, setChartViewerImage] = React.useState<ChartImage | null>(null);
-  const [isChartViewerOpen, setIsChartViewerOpen] = React.useState(false);
-  const [isUniversalViewerOpen, setIsUniversalViewerOpen] = React.useState(false);
-  const [chartRefreshTrigger, setChartRefreshTrigger] = React.useState(0);
+  }, [isOpen, trade?.id, isUploadOnlyMode]); // Add isUploadOnlyMode to dependencies to refresh when entering upload mode
 
   // Enhanced auto-save with backup mechanism and visual feedback
   React.useEffect(() => {
@@ -617,46 +651,82 @@ import * as Papa from "papaparse"; // Centralized import
   }, [chartAttachments, mode, trade, onSave, isUploadOnlyMode]);
 
   const handleChartImageDeleted = React.useCallback(async (imageType: 'beforeEntry' | 'afterExit') => {
+    console.log(`🗑️ [TradeModal] handleChartImageDeleted called for ${imageType}`);
+    console.log(`🗑️ [TradeModal] Current chartAttachments:`, chartAttachments);
+    console.log(`🗑️ [TradeModal] Upload-only mode: ${isUploadOnlyMode}`);
+
     const deletedImage = chartAttachments[imageType];
+    console.log(`🗑️ [TradeModal] Deleting image:`, deletedImage?.filename);
+
     const newAttachments = { ...chartAttachments };
     delete newAttachments[imageType];
 
-    const updatedChartAttachments = {
+    // Check if we have any remaining chart attachments
+    const hasRemainingAttachments = newAttachments.beforeEntry || newAttachments.afterExit;
+    console.log(`🗑️ [TradeModal] Has remaining attachments: ${hasRemainingAttachments}`);
+
+    const updatedChartAttachments = hasRemainingAttachments ? {
       ...newAttachments,
       metadata: {
         createdAt: chartAttachments.metadata?.createdAt || new Date(),
         updatedAt: new Date(),
         totalSize: Math.max(0, (chartAttachments.metadata?.totalSize || 0) - (deletedImage?.size || 0)),
       }
-    };
+    } : undefined; // Set to undefined if no attachments remain
+
+    console.log(`🗑️ [TradeModal] Updated chart attachments:`, updatedChartAttachments);
 
     // Update local state
-    setChartAttachments(updatedChartAttachments);
+    setChartAttachments(updatedChartAttachments || {});
     setIsDirty(true);
 
     // Trigger chart refresh for Universal Chart Viewer
     setChartRefreshTrigger(prev => prev + 1);
     console.log('🔄 Chart deleted, triggering Universal Chart Viewer refresh');
 
-    // CRITICAL FIX: Immediately update the trade in the database if it's an existing trade
-    // BUT don't auto-save in upload-only mode to prevent modal from closing
-    if (mode === 'edit' && trade?.id && !isUploadOnlyMode) {
+    // CRITICAL FIX: Always update the trade in the database immediately when deleting charts
+    // This ensures the chart attachment reference is removed from the trade record
+    // Even in upload-only mode, we need to persist deletions to prevent them from reappearing
+    if (trade?.id) {
       try {
         const updatedTrade = {
           ...trade,
-          chartAttachments: Object.keys(updatedChartAttachments).length > 0 ? updatedChartAttachments : undefined
+          chartAttachments: updatedChartAttachments // This will be undefined if no attachments remain
         };
 
+        console.log(`💾 [TradeModal] Saving updated trade to database:`, {
+          tradeId: trade.id,
+          hasChartAttachments: !!updatedChartAttachments,
+          chartAttachments: updatedChartAttachments
+        });
+
         // Save the updated trade to database immediately
+        // Note: In upload-only mode, this won't close the modal because we're not changing the modal state
         onSave(updatedTrade);
-        console.log(`✅ Chart ${imageType} deleted and trade updated immediately`);
+        console.log(`✅ Chart ${imageType} deleted and trade updated immediately in database (upload-only mode: ${isUploadOnlyMode})`);
       } catch (error) {
         console.error('❌ Failed to update trade after chart deletion:', error);
       }
-    } else if (isUploadOnlyMode) {
-      console.log(`🗑️ Chart ${imageType} deleted in upload-only mode - will save when user manually submits`);
+    } else {
+      console.warn(`⚠️ [TradeModal] No trade ID available for saving chart deletion`);
     }
-  }, [chartAttachments, mode, trade, onSave, isUploadOnlyMode]);
+
+    // Also ensure the form data is updated to reflect the deletion
+    if (hasRemainingAttachments) {
+      setFormData(prev => ({
+        ...prev,
+        chartAttachments: updatedChartAttachments
+      }));
+    } else {
+      // Remove chartAttachments property entirely if no attachments remain
+      setFormData(prev => {
+        const { chartAttachments: _, ...rest } = prev;
+        return rest;
+      });
+    }
+
+    console.log(`🗑️ Chart ${imageType} deleted - ${hasRemainingAttachments ? 'remaining attachments preserved' : 'all attachments removed'}`);
+  }, [chartAttachments, trade, onSave, isUploadOnlyMode]);
 
   const handleChartImageView = React.useCallback((chartImage: ChartImage, title: string) => {
     setChartViewerImage(chartImage);
@@ -783,19 +853,51 @@ import * as Papa from "papaparse"; // Centralized import
     }
 
     try {
+      // Clean up chart attachments - remove any that don't have valid data
+      const cleanedChartAttachments: TradeChartAttachments = {};
+      let hasValidAttachments = false;
+
+      if (chartAttachments.beforeEntry) {
+        // Validate beforeEntry attachment
+        const beforeEntry = chartAttachments.beforeEntry;
+        if (beforeEntry.id && beforeEntry.filename &&
+            ((beforeEntry.storage === 'inline' && beforeEntry.data) ||
+             (beforeEntry.storage === 'blob' && beforeEntry.blobId))) {
+          cleanedChartAttachments.beforeEntry = beforeEntry;
+          hasValidAttachments = true;
+        } else {
+          console.warn('🧹 Removing invalid beforeEntry chart attachment during save');
+        }
+      }
+
+      if (chartAttachments.afterExit) {
+        // Validate afterExit attachment
+        const afterExit = chartAttachments.afterExit;
+        if (afterExit.id && afterExit.filename &&
+            ((afterExit.storage === 'inline' && afterExit.data) ||
+             (afterExit.storage === 'blob' && afterExit.blobId))) {
+          cleanedChartAttachments.afterExit = afterExit;
+          hasValidAttachments = true;
+        } else {
+          console.warn('🧹 Removing invalid afterExit chart attachment during save');
+        }
+      }
+
+      // Add metadata if we have valid attachments
+      if (hasValidAttachments) {
+        cleanedChartAttachments.metadata = {
+          createdAt: chartAttachments.metadata?.createdAt || new Date(),
+          updatedAt: new Date(),
+          totalSize: (cleanedChartAttachments.beforeEntry?.size || 0) + (cleanedChartAttachments.afterExit?.size || 0),
+        };
+      }
+
       // Use current formData instead of debounced to ensure latest changes are saved
       const newTrade = {
         ...formData, // Use current formData instead of debouncedFormData
         id: formData.id || generateId(),
-        // Include chart attachments if any exist
-        chartAttachments: Object.keys(chartAttachments).length > 0 ? {
-          ...chartAttachments,
-          metadata: {
-            createdAt: chartAttachments.metadata?.createdAt || new Date(),
-            updatedAt: new Date(),
-            totalSize: (chartAttachments.beforeEntry?.size || 0) + (chartAttachments.afterExit?.size || 0),
-          }
-        } : undefined
+        // Include chart attachments only if we have valid ones
+        chartAttachments: hasValidAttachments ? cleanedChartAttachments : undefined
       };
 
       console.log('💾 Saving trade with data:', newTrade);
@@ -1476,9 +1578,16 @@ import * as Papa from "papaparse"; // Centralized import
                   selectedKey={activeTab}
                   onSelectionChange={(key) => {
                     // Prevent tab switching in upload-only mode
-                    if (!isUploadOnlyMode) {
-                      setActiveTab(key as string);
+                    if (isUploadOnlyMode) {
+                      return; // Stay on charts tab
                     }
+
+                    // In actions edit mode, prevent switching to charts tab
+                    if (isActionsEditMode && key === 'charts') {
+                      return; // Don't allow charts tab
+                    }
+
+                    setActiveTab(key as string);
                   }}
                   aria-label="Options"
                   color="primary"
@@ -1504,7 +1613,14 @@ import * as Papa from "papaparse"; // Centralized import
                   <Tab
                     key="charts"
                     title="Charts"
-                    className={isUploadOnlyMode ? "ring-2 ring-primary-500" : ""}
+                    isDisabled={isActionsEditMode}
+                    className={
+                      isUploadOnlyMode
+                        ? "ring-2 ring-primary-500"
+                        : isActionsEditMode
+                        ? "opacity-50 cursor-not-allowed"
+                        : ""
+                    }
                   />
                 </Tabs>
 
