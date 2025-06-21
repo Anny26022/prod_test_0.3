@@ -11,6 +11,7 @@ interface UniversalChartViewerProps {
   onOpenChange: (open: boolean) => void;
   initialChartImage?: ChartImage | null;
   initialTradeId?: string;
+  refreshTrigger?: number; // Add refresh trigger prop
 }
 
 interface ChartImageWithContext extends ChartImageBlob {
@@ -27,6 +28,7 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
   onOpenChange,
   initialChartImage,
   initialTradeId,
+  refreshTrigger,
 }) => {
   const [allImages, setAllImages] = useState<ChartImageWithContext[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -77,7 +79,7 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
 
   const currentImage = filteredImages[currentIndex];
 
-  // Load all chart images when modal opens
+  // Load all chart images when modal opens or when refresh is triggered
   useEffect(() => {
     if (isOpen) {
       loadAllImages();
@@ -92,7 +94,7 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
       setZoom(1);
       setPosition({ x: 0, y: 0 });
     }
-  }, [isOpen]);
+  }, [isOpen, refreshTrigger]); // Add refreshTrigger to dependencies
 
   // Set initial image when provided
   useEffect(() => {
@@ -165,40 +167,127 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
     setLoadingProgress(0);
 
     try {
-      const images = await DatabaseService.getAllChartImageBlobsWithTradeInfo();
-      
-      // Convert blobs to data URLs
+      // Load both blob storage and inline storage charts
+      const [blobImages, allTrades] = await Promise.all([
+        DatabaseService.getAllChartImageBlobsWithTradeInfo(),
+        DatabaseService.getAllTrades()
+      ]);
+
+      // Convert blob images to data URLs
       const imagesWithDataUrls: ChartImageWithContext[] = [];
-      
-      for (let i = 0; i < images.length; i++) {
-        const image = images[i];
-        setLoadingProgress((i / images.length) * 100);
-        
+      let processedCount = 0;
+      const totalItems = blobImages.length + allTrades.length;
+
+      // Process blob storage images
+      for (let i = 0; i < blobImages.length; i++) {
+        const image = blobImages[i];
+        setLoadingProgress((processedCount / totalItems) * 100);
+
         try {
           const dataUrl = await new Promise<string>((resolve) => {
             const reader = new FileReader();
             reader.onload = () => resolve(reader.result as string);
             reader.readAsDataURL(image.data);
           });
-          
+
           imagesWithDataUrls.push({
             ...image,
             dataUrl
           });
         } catch (err) {
-          console.error(`Failed to load image ${image.filename}:`, err);
+          console.error(`Failed to load blob image ${image.filename}:`, err);
         }
+        processedCount++;
       }
 
-      setAllImages(imagesWithDataUrls);
+      // Process inline storage images from trades
+      for (let i = 0; i < allTrades.length; i++) {
+        const trade = allTrades[i];
+        setLoadingProgress((processedCount / totalItems) * 100);
+
+        try {
+          if (trade.chartAttachments) {
+            // Process beforeEntry chart if it exists and uses inline storage
+            if (trade.chartAttachments.beforeEntry?.storage === 'inline' && trade.chartAttachments.beforeEntry.data) {
+              const chartImage = trade.chartAttachments.beforeEntry;
+
+              const dataUrl = `data:${chartImage.mimeType};base64,${chartImage.data}`;
+
+              imagesWithDataUrls.push({
+                id: chartImage.id,
+                tradeId: trade.id,
+                imageType: 'beforeEntry',
+                filename: chartImage.filename,
+                mimeType: chartImage.mimeType,
+                size: chartImage.size,
+                data: new Blob(), // Not used for inline
+                uploadedAt: new Date(chartImage.uploadedAt),
+                compressed: chartImage.compressed || false,
+                originalSize: chartImage.originalSize,
+                tradeName: trade.name,
+                tradeDate: trade.date,
+                tradeNo: Number(trade.tradeNo),
+                dataUrl
+              });
+            }
+
+            // Process afterExit chart if it exists and uses inline storage
+            if (trade.chartAttachments.afterExit?.storage === 'inline' && trade.chartAttachments.afterExit.data) {
+              const chartImage = trade.chartAttachments.afterExit;
+
+              const dataUrl = `data:${chartImage.mimeType};base64,${chartImage.data}`;
+
+              imagesWithDataUrls.push({
+                id: chartImage.id,
+                tradeId: trade.id,
+                imageType: 'afterExit',
+                filename: chartImage.filename,
+                mimeType: chartImage.mimeType,
+                size: chartImage.size,
+                data: new Blob(), // Not used for inline
+                uploadedAt: new Date(chartImage.uploadedAt),
+                compressed: chartImage.compressed || false,
+                originalSize: chartImage.originalSize,
+                tradeName: trade.name,
+                tradeDate: trade.date,
+                tradeNo: Number(trade.tradeNo),
+                dataUrl
+              });
+            }
+          }
+        } catch (error) {
+          // Silently skip trades with errors
+        }
+        processedCount++;
+      }
+
+
+
+      // Sort images: beforeEntry first, then afterExit, then by trade date
+      const sortedImages = imagesWithDataUrls.sort((a, b) => {
+        // First sort by image type: beforeEntry (0) comes before afterExit (1)
+        const typeOrder = { beforeEntry: 0, afterExit: 1 };
+        const typeComparison = typeOrder[a.imageType] - typeOrder[b.imageType];
+
+        if (typeComparison !== 0) {
+          return typeComparison;
+        }
+
+        // If same type, sort by trade date (newest first)
+        const dateA = a.tradeDate ? new Date(a.tradeDate).getTime() : 0;
+        const dateB = b.tradeDate ? new Date(b.tradeDate).getTime() : 0;
+        return dateB - dateA;
+      });
+
+      setAllImages(sortedImages);
       setLoadingProgress(100);
-      
+
       // Preload first few images
       preloadAdjacentImages(0, imagesWithDataUrls);
-      
+
     } catch (err) {
-      setError('Failed to load chart images');
-      console.error('Failed to load all chart images:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+      setError(`Failed to load chart images: ${errorMessage}`);
     } finally {
       setIsLoading(false);
     }
@@ -308,190 +397,183 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
       <ModalContent>
         {(onClose) => (
           <>
-            <ModalHeader className="flex justify-between items-center border-b border-gray-200 dark:border-gray-700 px-6 py-4">
+            <ModalHeader className="flex justify-between items-center border-b border-gray-200 dark:border-gray-700 px-4 py-3">
               <div className="flex items-center gap-4">
-                <Icon icon="lucide:images" className="w-6 h-6 text-primary-500" />
-                <div className="flex items-center gap-4">
-                  {/* Symbol Search Input */}
-                  <div className="relative">
-                    <Input
-                      size="sm"
-                      placeholder="Search symbol..."
-                      value={symbolSearch}
-                      onChange={(e) => handleSymbolSearchChange(e.target.value)}
-                      onFocus={() => setShowSymbolDropdown(symbolSearch.length > 0)}
-                      onBlur={() => setTimeout(() => setShowSymbolDropdown(false), 200)}
-                      className="w-48"
-                      startContent={<Icon icon="lucide:search" className="w-4 h-4 text-gray-400" />}
-                      endContent={
-                        symbolSearch && (
-                          <Button
-                            isIconOnly
-                            size="sm"
-                            variant="light"
-                            onPress={() => {
-                              setSymbolSearch('');
-                              setShowSymbolDropdown(false);
-                            }}
-                            className="w-4 h-4 min-w-4"
-                          >
-                            <Icon icon="lucide:x" className="w-3 h-3" />
-                          </Button>
-                        )
-                      }
-                    />
 
-                    {/* Symbol Dropdown */}
-                    {showSymbolDropdown && filteredSymbols.length > 0 && (
-                      <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 max-h-48 overflow-y-auto">
-                        {filteredSymbols.map((symbol) => (
-                          <div
-                            key={symbol}
-                            className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-sm"
-                            onMouseDown={() => handleSymbolSelect(symbol)}
-                          >
-                            {symbol}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Current Symbol Display */}
-                  <div>
-                    <h3 className="text-xl font-semibold">
-                      {currentImage?.tradeName || 'Chart Viewer'}
-                    </h3>
-                    {currentImage && (
-                      <div className="flex items-center gap-2 mt-1">
-                        <Chip
+                {/* Compact Symbol Search */}
+                <div className="relative">
+                  <Input
+                    size="md"
+                    placeholder="Search..."
+                    value={symbolSearch}
+                    onChange={(e) => handleSymbolSearchChange(e.target.value)}
+                    onFocus={() => setShowSymbolDropdown(symbolSearch.length > 0)}
+                    onBlur={() => setTimeout(() => setShowSymbolDropdown(false), 200)}
+                    className="w-40"
+                    classNames={{
+                      input: "text-sm",
+                      inputWrapper: "h-8 min-h-8"
+                    }}
+                    startContent={<Icon icon="lucide:search" className="w-4 h-4 text-gray-400" />}
+                    endContent={
+                      symbolSearch && (
+                        <Button
+                          isIconOnly
                           size="sm"
-                          color={currentImage.imageType === 'beforeEntry' ? 'success' : 'warning'}
-                          startContent={<Icon icon={getImageTypeIcon(currentImage.imageType)} className="w-3 h-3" />}
+                          variant="light"
+                          onPress={() => {
+                            setSymbolSearch('');
+                            setShowSymbolDropdown(false);
+                          }}
+                          className="w-4 h-4 min-w-4"
                         >
-                          {getImageTypeLabel(currentImage.imageType)}
-                        </Chip>
-                        <span className="text-sm text-gray-600 dark:text-gray-400">
-                          Trade #{currentImage.tradeNo}
-                        </span>
-                        <span className="text-xs text-gray-500">
-                          {formatFileSize(currentImage.size)}
-                        </span>
-                      </div>
-                    )}
-                  </div>
+                          <Icon icon="lucide:x" className="w-3 h-3" />
+                        </Button>
+                      )
+                    }
+                  />
+
+                  {/* Symbol Dropdown */}
+                  {showSymbolDropdown && filteredSymbols.length > 0 && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 max-h-32 overflow-y-auto">
+                      {filteredSymbols.map((symbol) => (
+                        <div
+                          key={symbol}
+                          className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-sm"
+                          onMouseDown={() => handleSymbolSelect(symbol)}
+                        >
+                          {symbol}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
+
+                {/* Compact Current Image Info */}
+                {currentImage && (
+                  <div className="flex items-center gap-3">
+                    <Chip
+                      size="md"
+                      color={currentImage.imageType === 'beforeEntry' ? 'success' : 'warning'}
+                      className="text-sm h-6 px-3"
+                    >
+                      {getImageTypeLabel(currentImage.imageType)}
+                    </Chip>
+                    <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+                      {currentImage.tradeName}
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center gap-3">
                 {/* Filter Controls */}
                 <Select
-                  size="sm"
+                  size="md"
                   value={filter}
                   onChange={(e) => setFilter(e.target.value as FilterType)}
-                  className="w-40"
-                  label="Filter"
+                  className="w-28"
+                  classNames={{
+                    trigger: "h-8 min-h-8",
+                    value: "text-sm"
+                  }}
+                  placeholder="Filter"
+                  aria-label="Filter charts"
                 >
-                  <SelectItem key="all" value="all">All Charts</SelectItem>
-                  <SelectItem key="beforeEntry" value="beforeEntry">Before Entry</SelectItem>
-                  <SelectItem key="afterExit" value="afterExit">After Exit</SelectItem>
+                  <SelectItem key="all" value="all">All</SelectItem>
+                  <SelectItem key="beforeEntry" value="beforeEntry">Entry</SelectItem>
+                  <SelectItem key="afterExit" value="afterExit">Exit</SelectItem>
                 </Select>
 
                 {/* Navigation Counter */}
-                <div className="text-sm text-gray-600 dark:text-gray-400 px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg">
-                  {filteredImages.length > 0 ? `${currentIndex + 1} / ${filteredImages.length}` : '0 / 0'}
+                <div className="text-sm font-medium text-gray-600 dark:text-gray-400 px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded text-center min-w-[3rem]">
+                  {filteredImages.length > 0 ? `${currentIndex + 1}/${filteredImages.length}` : '0/0'}
                 </div>
 
                 {/* Navigation Controls */}
-                <div className="flex items-center gap-1">
-                  <Tooltip content="Previous (←)">
-                    <Button
-                      isIconOnly
-                      variant="light"
-                      size="sm"
-                      onPress={navigatePrevious}
-                      isDisabled={currentIndex <= 0}
-                    >
-                      <Icon icon="lucide:chevron-left" className="w-5 h-5" />
-                    </Button>
-                  </Tooltip>
-                  
-                  <Tooltip content="Next (→)">
-                    <Button
-                      isIconOnly
-                      variant="light"
-                      size="sm"
-                      onPress={navigateNext}
-                      isDisabled={currentIndex >= filteredImages.length - 1}
-                    >
-                      <Icon icon="lucide:chevron-right" className="w-5 h-5" />
-                    </Button>
-                  </Tooltip>
-                </div>
-
-                {/* Zoom Controls */}
-                <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
-                  <Tooltip content="Zoom Out">
-                    <Button
-                      isIconOnly
-                      variant="light"
-                      size="sm"
-                      onPress={handleZoomOut}
-                      isDisabled={zoom <= 0.5}
-                    >
-                      <Icon icon="lucide:zoom-out" className="w-4 h-4" />
-                    </Button>
-                  </Tooltip>
-                  
-                  <span className="text-sm font-mono px-2 min-w-[60px] text-center">
-                    {Math.round(zoom * 100)}%
-                  </span>
-                  
-                  <Tooltip content="Zoom In">
-                    <Button
-                      isIconOnly
-                      variant="light"
-                      size="sm"
-                      onPress={handleZoomIn}
-                      isDisabled={zoom >= 5}
-                    >
-                      <Icon icon="lucide:zoom-in" className="w-4 h-4" />
-                    </Button>
-                  </Tooltip>
-                  
-                  <Tooltip content="Reset Zoom">
-                    <Button
-                      isIconOnly
-                      variant="light"
-                      size="sm"
-                      onPress={resetZoom}
-                    >
-                      <Icon icon="lucide:maximize" className="w-4 h-4" />
-                    </Button>
-                  </Tooltip>
-                </div>
-
-                {/* Download Button */}
-                <Tooltip content="Download Image">
+                <div className="flex items-center">
                   <Button
                     isIconOnly
                     variant="light"
-                    size="sm"
-                    onPress={downloadCurrentImage}
-                    isDisabled={!currentImage?.dataUrl}
+                    size="md"
+                    onPress={navigatePrevious}
+                    isDisabled={currentIndex <= 0}
+                    className="w-8 h-8 min-w-8"
                   >
-                    <Icon icon="lucide:download" className="w-4 h-4" />
+                    <Icon icon="lucide:chevron-left" className="w-4 h-4" />
                   </Button>
-                </Tooltip>
 
-                {/* Close Button */}
+                  <Button
+                    isIconOnly
+                    variant="light"
+                    size="md"
+                    onPress={navigateNext}
+                    isDisabled={currentIndex >= filteredImages.length - 1}
+                    className="w-8 h-8 min-w-8"
+                  >
+                    <Icon icon="lucide:chevron-right" className="w-4 h-4" />
+                  </Button>
+                </div>
+
+                {/* Zoom Controls */}
+                <div className="flex items-center bg-gray-100 dark:bg-gray-800 rounded px-2">
+                  <Button
+                    isIconOnly
+                    variant="light"
+                    size="md"
+                    onPress={handleZoomOut}
+                    isDisabled={zoom <= 0.5}
+                    className="w-7 h-7 min-w-7"
+                  >
+                    <Icon icon="lucide:zoom-out" className="w-4 h-4" />
+                  </Button>
+
+                  <span className="text-sm font-mono px-2 min-w-[2.5rem] text-center">
+                    {Math.round(zoom * 100)}%
+                  </span>
+
+                  <Button
+                    isIconOnly
+                    variant="light"
+                    size="md"
+                    onPress={handleZoomIn}
+                    isDisabled={zoom >= 5}
+                    className="w-7 h-7 min-w-7"
+                  >
+                    <Icon icon="lucide:zoom-in" className="w-4 h-4" />
+                  </Button>
+
+                  <Button
+                    isIconOnly
+                    variant="light"
+                    size="md"
+                    onPress={resetZoom}
+                    className="w-7 h-7 min-w-7"
+                  >
+                    <Icon icon="lucide:maximize" className="w-4 h-4" />
+                  </Button>
+                </div>
+
+                {/* Action Buttons */}
                 <Button
                   isIconOnly
                   variant="light"
-                  size="sm"
-                  onPress={onClose}
+                  size="md"
+                  onPress={downloadCurrentImage}
+                  isDisabled={!currentImage?.dataUrl}
+                  className="w-8 h-8 min-w-8"
                 >
-                  <Icon icon="lucide:x" className="w-5 h-5" />
+                  <Icon icon="lucide:download" className="w-4 h-4" />
+                </Button>
+
+                <Button
+                  isIconOnly
+                  variant="light"
+                  size="md"
+                  onPress={onClose}
+                  className="w-8 h-8 min-w-8"
+                >
+                  <Icon icon="lucide:x" className="w-4 h-4" />
                 </Button>
               </div>
             </ModalHeader>
@@ -586,29 +668,25 @@ export const UniversalChartViewer: React.FC<UniversalChartViewerProps> = ({
               ) : null}
             </ModalBody>
 
-            <ModalFooter className="border-t border-gray-200 dark:border-gray-700 px-6 py-3">
+            <ModalFooter className="border-t border-gray-200 dark:border-gray-700 px-4 py-3">
               <div className="flex justify-between items-center w-full">
                 <div className="text-sm text-gray-500">
-                  <div className="flex items-center gap-4">
-                    <span>Use ← → arrow keys to navigate</span>
-                    <span>•</span>
-                    <span>Press 1 for Before Entry, 2 for After Exit, 0 for All</span>
-                    {zoom > 1 && (
-                      <>
-                        <span>•</span>
-                        <span>Click and drag to pan</span>
-                      </>
-                    )}
-                  </div>
+                  <span>← → keys to navigate</span>
+                  {zoom > 1 && <span> • Drag to pan</span>}
                 </div>
 
-                <div className="flex items-center gap-2">
-                  {currentImage && (
-                    <div className="text-sm text-gray-600 dark:text-gray-400">
-                      {currentImage.tradeDate && new Date(currentImage.tradeDate).toLocaleDateString()}
-                    </div>
+                <div className="flex items-center gap-3">
+                  {currentImage && currentImage.tradeDate && (
+                    <span className="text-sm text-gray-600 dark:text-gray-400">
+                      {new Date(currentImage.tradeDate).toLocaleDateString()}
+                    </span>
                   )}
-                  <Button color="primary" onPress={onClose}>
+                  <Button
+                    color="primary"
+                    size="md"
+                    onPress={onClose}
+                    className="h-8 text-sm"
+                  >
                     Close
                   </Button>
                 </div>

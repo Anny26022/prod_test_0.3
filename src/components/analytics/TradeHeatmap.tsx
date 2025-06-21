@@ -21,16 +21,51 @@ const TradeHeatmap: React.FC<TradeHeatmapProps> = ({ trades, startDate, endDate,
 
   // Aggregate P&L by date using accounting method-aware dates
   const data = trades.reduce((acc, trade) => {
-    // Use accounting method-aware date for aggregation
-    const relevantDate = getTradeDateForAccounting(trade, useCashBasis);
-    const day = relevantDate.split("T")[0];
-    const tradePL = calculateTradePL(trade, useCashBasis);
+    try {
+      // Use accounting method-aware date for aggregation
+      const relevantDate = getTradeDateForAccounting(trade, useCashBasis);
+      if (!relevantDate) {
+        return acc;
+      }
 
-    // For cash basis, we want to aggregate all exits on the same date
-    // This is intentional behavior - multiple exits on same date should sum up
-    // No deduplication needed here as we want the total P/L impact per day
-    acc[day] = (acc[day] || 0) + tradePL;
-    return acc;
+      const day = relevantDate.split("T")[0];
+      if (!day.match(/^\d{4}-\d{2}-\d{2}$/)) {
+        return acc;
+      }
+
+      // Calculate P/L based on accounting method - use the same logic as other working components
+      let tradePL = 0;
+
+      if (!useCashBasis) {
+        // Accrual basis: Use multiple fallbacks like other components
+        tradePL = trade.plRs ?? trade.realisedAmount ?? 0;
+
+        // If still 0, try to calculate from trade data for closed positions
+        if (tradePL === 0 && (trade.positionStatus === 'Closed' || trade.positionStatus === 'Partial')) {
+          const avgEntry = trade.avgEntry || trade.entry || 0;
+          const avgExit = trade.avgExitPrice || 0;
+          const exitedQty = trade.exitedQty || 0;
+
+          if (avgEntry > 0 && avgExit > 0 && exitedQty > 0) {
+            tradePL = trade.buySell === 'Buy'
+              ? (avgExit - avgEntry) * exitedQty
+              : (avgEntry - avgExit) * exitedQty;
+          }
+        }
+      } else {
+        // Cash basis: Use the existing function
+        tradePL = calculateTradePL(trade, useCashBasis);
+      }
+
+      // For cash basis, we want to aggregate all exits on the same date
+      // This is intentional behavior - multiple exits on same date should sum up
+      // No deduplication needed here as we want the total P/L impact per day
+      acc[day] = (acc[day] || 0) + tradePL;
+
+      return acc;
+    } catch (error) {
+      return acc;
+    }
   }, {} as Record<string, number>);
 
   // Convert to heatmap format

@@ -348,6 +348,8 @@ export const TradeJournal = React.memo(function TradeJournal({
   const [isChartViewerOpen, setIsChartViewerOpen] = React.useState(false);
   const [chartViewerTitle, setChartViewerTitle] = React.useState('');
   const [isUniversalViewerOpen, setIsUniversalViewerOpen] = React.useState(false);
+  const [chartRefreshTrigger, setChartRefreshTrigger] = React.useState(0);
+  const [isUploadOnlyMode, setIsUploadOnlyMode] = React.useState(false);
 
   // Dynamic pagination options based on dataset size
   const rowsPerPageOptions = React.useMemo(() => {
@@ -525,6 +527,19 @@ export const TradeJournal = React.memo(function TradeJournal({
     onEditOpen();
   };
 
+  const handleUploadOnly = (trade: Trade) => {
+    setSelectedTrade(trade);
+    setIsUploadOnlyMode(true);
+    onEditOpen();
+  };
+
+  const handleEditModalClose = (isOpen: boolean) => {
+    if (!isOpen) {
+      setIsUploadOnlyMode(false);
+    }
+    onEditOpenChange(isOpen);
+  };
+
   const handleDelete = (trade: Trade) => {
     setSelectedTrade(trade);
     onDeleteOpen();
@@ -543,13 +558,38 @@ export const TradeJournal = React.memo(function TradeJournal({
       hasAfterExit: !!trade.chartAttachments?.afterExit,
       chartAttachments: trade.chartAttachments
     });
+
+    // Check if this update involves chart changes (deletion/modification)
+    const existingTrade = trades.find(t => t.id === trade.id);
+    const chartChanged = existingTrade && (
+      (existingTrade.chartAttachments?.beforeEntry?.id !== trade.chartAttachments?.beforeEntry?.id) ||
+      (existingTrade.chartAttachments?.afterExit?.id !== trade.chartAttachments?.afterExit?.id)
+    );
+
     updateTrade(trade);
+
+    // Trigger chart refresh if charts were modified
+    if (chartChanged) {
+      setChartRefreshTrigger(prev => prev + 1);
+      console.log('🔄 Chart changes detected, triggering Universal Chart Viewer refresh');
+    }
+
     onEditOpenChange();
   };
 
-  const handleDeleteConfirm = () => {
+  const handleDeleteConfirm = async () => {
     if (selectedTrade) {
-      deleteTrade(selectedTrade.id);
+      // Check if the trade has charts before deletion
+      const hasCharts = selectedTrade.chartAttachments?.beforeEntry || selectedTrade.chartAttachments?.afterExit;
+
+      await deleteTrade(selectedTrade.id);
+
+      // Trigger chart refresh if the deleted trade had charts
+      if (hasCharts) {
+        setChartRefreshTrigger(prev => prev + 1);
+        console.log('🔄 Trade with charts deleted, triggering Universal Chart Viewer refresh');
+      }
+
       onDeleteOpenChange();
     }
   };
@@ -1904,16 +1944,29 @@ export const TradeJournal = React.memo(function TradeJournal({
     }
 
     switch (columnKey) {
-      // Trade number (editable)
+      // Trade number (editable) with mini upload button
       case "tradeNo":
         return (
-          <EditableCell
-            key={`${trade.id}-${columnKey}`}
-            value={cellValue as string}
-            onSave={(value) => handleInlineEditSave(trade.id, columnKey as keyof Trade, value)}
-            tradeId={trade.id}
-            field={columnKey}
-          />
+          <div className="flex items-center gap-0.5">
+            <EditableCell
+              key={`${trade.id}-${columnKey}`}
+              value={cellValue as string}
+              onSave={(value) => handleInlineEditSave(trade.id, columnKey as keyof Trade, value)}
+              tradeId={trade.id}
+              field={columnKey}
+            />
+            <Tooltip content="Upload Charts">
+              <Button
+                isIconOnly
+                size="sm"
+                variant="light"
+                onPress={() => handleUploadOnly(trade)}
+                className="w-3 h-3 min-w-3 rounded p-0 hover:bg-primary/10 transition opacity-60 hover:opacity-90"
+              >
+                <Icon icon="lucide:upload" className="w-2.5 h-2.5" />
+              </Button>
+            </Tooltip>
+          </div>
         );
 
 
@@ -2220,17 +2273,7 @@ export const TradeJournal = React.memo(function TradeJournal({
       realizedTrades = processedTrades.filter(trade => trade.positionStatus !== 'Open');
     }
 
-    // Debug: Compare filtering results
-    if (process.env.NODE_ENV === 'development' && useCashBasis) {
-      const debugCashTrades = processedTrades.filter(trade => {
-        return trade._cashBasisExit || trade.positionStatus !== 'Open';
-      });
-      console.log(`🔍 [Filter Check] Stats realizedTrades: ${realizedTrades.length}, Debug cashTrades: ${debugCashTrades.length}`);
 
-      if (realizedTrades.length !== debugCashTrades.length) {
-        console.log(`⚠️ [Filter Mismatch] Different filtering results!`);
-      }
-    }
 
     let debugSum = 0;
     const realizedPL = realizedTrades.reduce((sum, trade, index) => {
@@ -3272,11 +3315,12 @@ export const TradeJournal = React.memo(function TradeJournal({
             <TradeModal
               key="edit-trade-modal"
               isOpen={isEditOpen}
-              onOpenChange={onEditOpenChange}
+              onOpenChange={handleEditModalClose}
               trade={selectedTrade}
               onSave={handleUpdateTrade}
               mode="edit"
               symbol={selectedTrade?.name || ''}
+              isUploadOnlyMode={isUploadOnlyMode}
             />
 
             <DeleteConfirmModal
@@ -3312,6 +3356,7 @@ export const TradeJournal = React.memo(function TradeJournal({
         isOpen={isUniversalViewerOpen}
         onOpenChange={setIsUniversalViewerOpen}
         initialChartImage={chartViewerImage}
+        refreshTrigger={chartRefreshTrigger}
       />
 
     </div>

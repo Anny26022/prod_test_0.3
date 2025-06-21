@@ -646,8 +646,29 @@ export const useTrades = () => {
     }
   }, [accountingMethod]); // Only depend on accounting method to avoid circular dependencies
 
-  const addTrade = React.useCallback((trade: Trade) => {
+  const addTrade = React.useCallback(async (trade: Trade) => {
     console.log(`➕ [addTrade] Adding new trade: ${trade.name} (${trade.id})`);
+
+    // CRITICAL FIX: Update chart blob tradeIds if this trade has chart attachments
+    if (trade.chartAttachments && (trade.chartAttachments.beforeEntry || trade.chartAttachments.afterExit)) {
+      try {
+        console.log(`📸 [addTrade] Updating chart blob tradeIds from 'new' to '${trade.id}'`);
+
+        // Update beforeEntry blob if exists
+        if (trade.chartAttachments.beforeEntry?.storage === 'blob' && trade.chartAttachments.beforeEntry.blobId) {
+          await DatabaseService.updateChartImageBlobTradeId(trade.chartAttachments.beforeEntry.blobId, trade.id);
+          console.log(`📸 Updated beforeEntry blob tradeId to ${trade.id}`);
+        }
+
+        // Update afterExit blob if exists
+        if (trade.chartAttachments.afterExit?.storage === 'blob' && trade.chartAttachments.afterExit.blobId) {
+          await DatabaseService.updateChartImageBlobTradeId(trade.chartAttachments.afterExit.blobId, trade.id);
+          console.log(`📸 Updated afterExit blob tradeId to ${trade.id}`);
+        }
+      } catch (error) {
+        console.error('❌ [addTrade] Failed to update chart blob tradeIds:', error);
+      }
+    }
 
     setTrades(prev => {
       console.log(`➕ [addTrade] Current trades count: ${prev.length}`);
@@ -698,8 +719,29 @@ export const useTrades = () => {
   const pendingUpdatesRef = React.useRef<Map<string, Trade>>(new Map());
   const updateCallbacksRef = React.useRef<Map<string, () => void>>(new Map());
 
-  const updateTrade = React.useCallback((updatedTrade: Trade, onComplete?: () => void) => {
+  const updateTrade = React.useCallback(async (updatedTrade: Trade, onComplete?: () => void) => {
     console.log(`✏️ [updateTrade] Updating trade: ${updatedTrade.name} (${updatedTrade.id})`);
+
+    // CRITICAL FIX: Update chart blob tradeIds if this trade has chart attachments
+    if (updatedTrade.chartAttachments && (updatedTrade.chartAttachments.beforeEntry || updatedTrade.chartAttachments.afterExit)) {
+      try {
+        console.log(`📸 [updateTrade] Updating chart blob tradeIds for trade '${updatedTrade.id}'`);
+
+        // Update beforeEntry blob if exists
+        if (updatedTrade.chartAttachments.beforeEntry?.storage === 'blob' && updatedTrade.chartAttachments.beforeEntry.blobId) {
+          await DatabaseService.updateChartImageBlobTradeId(updatedTrade.chartAttachments.beforeEntry.blobId, updatedTrade.id);
+          console.log(`📸 Updated beforeEntry blob tradeId to ${updatedTrade.id}`);
+        }
+
+        // Update afterExit blob if exists
+        if (updatedTrade.chartAttachments.afterExit?.storage === 'blob' && updatedTrade.chartAttachments.afterExit.blobId) {
+          await DatabaseService.updateChartImageBlobTradeId(updatedTrade.chartAttachments.afterExit.blobId, updatedTrade.id);
+          console.log(`📸 Updated afterExit blob tradeId to ${updatedTrade.id}`);
+        }
+      } catch (error) {
+        console.error('❌ [updateTrade] Failed to update chart blob tradeIds:', error);
+      }
+    }
 
     // Store pending update
     pendingUpdatesRef.current.set(updatedTrade.id, updatedTrade);
@@ -782,13 +824,23 @@ export const useTrades = () => {
     }, 200); // Reduced to 200ms to prevent race conditions with user input
   }, [recalculateTradesWithCurrentPortfolio]);
 
-  const deleteTrade = React.useCallback((id: string) => {
+  const deleteTrade = React.useCallback(async (id: string) => {
     console.log(`🗑️ [deleteTrade] Starting delete for trade ID: ${id}`);
 
     // CRITICAL FIX: Handle cash basis expanded trade IDs
     // Extract original trade ID from expanded IDs like "original_id_exit_0"
     const originalTradeId = id.includes('_exit_') ? id.split('_exit_')[0] : id;
     console.log(`🗑️ [deleteTrade] Original trade ID: ${originalTradeId} (from ${id})`);
+
+    // First, delete associated chart images
+    try {
+      const { ChartImageService } = await import('../services/chartImageService');
+      const chartImagesDeleted = await ChartImageService.deleteTradeChartImages(originalTradeId);
+      console.log(`🗑️ [deleteTrade] Chart images deletion ${chartImagesDeleted ? 'successful' : 'failed'}`);
+    } catch (error) {
+      console.error('❌ [deleteTrade] Failed to delete chart images:', error);
+      // Continue with trade deletion even if chart deletion fails
+    }
 
     setTrades(prev => {
       console.log(`🗑️ [deleteTrade] Current trades count: ${prev.length}`);

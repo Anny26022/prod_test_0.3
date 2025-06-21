@@ -587,6 +587,23 @@ export class DatabaseService {
     }
   }
 
+  static async updateChartImageBlobTradeId(blobId: string, newTradeId: string): Promise<boolean> {
+    try {
+      const blob = await db.chartImageBlobs.get(blobId);
+      if (!blob) {
+        console.warn(`⚠️ Chart image blob not found: ${blobId}`);
+        return false;
+      }
+
+      await db.chartImageBlobs.update(blobId, { tradeId: newTradeId });
+      console.log(`📸 Updated chart image blob tradeId: ${blobId} -> ${newTradeId}`);
+      return true;
+    } catch (error) {
+      console.error('❌ Failed to update chart image blob tradeId:', error);
+      return false;
+    }
+  }
+
   static async deleteTradeChartImageBlobs(tradeId: string): Promise<boolean> {
     try {
       const count = await db.chartImageBlobs.where('tradeId').equals(tradeId).delete();

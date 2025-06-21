@@ -73,6 +73,7 @@ import * as Papa from "papaparse"; // Centralized import
     onSave: (trade: Trade) => void;
     mode: "add" | "edit";
     symbol?: string;
+    isUploadOnlyMode?: boolean;
   }
 
   type TradeModalFormData = Trade & { slPercent: number };
@@ -236,6 +237,7 @@ import * as Papa from "papaparse"; // Centralized import
     onSave,
     mode,
     symbol: initialSymbol = "",
+    isUploadOnlyMode = false,
   }) => {
     console.log("[TradeModal] Initial Symbol:", initialSymbol); // Log initial symbol
 
@@ -319,12 +321,24 @@ import * as Papa from "papaparse"; // Centralized import
   const [isAutoSaving, setIsAutoSaving] = React.useState<boolean>(false);
   const [lastSaved, setLastSaved] = React.useState<Date | null>(null);
   const [activeTab, setActiveTab] = React.useState<string>(() => {
+    // If in upload-only mode, always start with charts tab
+    if (isUploadOnlyMode) {
+      return 'charts';
+    }
+
     if (typeof window !== 'undefined') {
       const saved = sessionStorage.getItem(sessionKey + '_activeTab');
       if (saved) return saved;
     }
     return 'basic';
   });
+
+  // Reset to charts tab when entering upload-only mode
+  React.useEffect(() => {
+    if (isUploadOnlyMode) {
+      setActiveTab('charts');
+    }
+  }, [isUploadOnlyMode]);
 
   // Chart attachment state
   const [chartAttachments, setChartAttachments] = React.useState<TradeChartAttachments>(() => {
@@ -342,6 +356,12 @@ import * as Papa from "papaparse"; // Centralized import
     }
     return existing;
   });
+
+  // Track upload methods for chart consistency
+  const [chartUploadMethods, setChartUploadMethods] = React.useState<{
+    beforeEntry?: 'file' | 'url';
+    afterExit?: 'file' | 'url';
+  }>({});
 
   // Load chart image blobs when modal opens
   React.useEffect(() => {
@@ -408,6 +428,7 @@ import * as Papa from "papaparse"; // Centralized import
   const [chartViewerImage, setChartViewerImage] = React.useState<ChartImage | null>(null);
   const [isChartViewerOpen, setIsChartViewerOpen] = React.useState(false);
   const [isUniversalViewerOpen, setIsUniversalViewerOpen] = React.useState(false);
+  const [chartRefreshTrigger, setChartRefreshTrigger] = React.useState(0);
 
   // Enhanced auto-save with backup mechanism and visual feedback
   React.useEffect(() => {
@@ -551,36 +572,91 @@ import * as Papa from "papaparse"; // Centralized import
   ]);
 
   // Chart attachment handlers
-  const handleChartImageUploaded = React.useCallback((imageType: 'beforeEntry' | 'afterExit', chartImage: ChartImage) => {
-    setChartAttachments(prev => ({
-      ...prev,
+  const handleChartImageUploaded = React.useCallback(async (imageType: 'beforeEntry' | 'afterExit', chartImage: ChartImage, uploadMethod?: 'file' | 'url') => {
+    const newChartAttachments = {
+      ...chartAttachments,
       [imageType]: chartImage,
       metadata: {
-        createdAt: prev.metadata?.createdAt || new Date(),
+        createdAt: chartAttachments.metadata?.createdAt || new Date(),
         updatedAt: new Date(),
-        totalSize: (prev.metadata?.totalSize || 0) + chartImage.size,
+        totalSize: (chartAttachments.metadata?.totalSize || 0) + chartImage.size,
       }
-    }));
-    setIsDirty(true);
-  }, []);
+    };
 
-  const handleChartImageDeleted = React.useCallback((imageType: 'beforeEntry' | 'afterExit') => {
-    setChartAttachments(prev => {
-      const deletedImage = prev[imageType];
-      const newAttachments = { ...prev };
-      delete newAttachments[imageType];
-
-      return {
-        ...newAttachments,
-        metadata: {
-          createdAt: prev.metadata?.createdAt || new Date(),
-          updatedAt: new Date(),
-          totalSize: Math.max(0, (prev.metadata?.totalSize || 0) - (deletedImage?.size || 0)),
-        }
-      };
-    });
+    // Update local state
+    setChartAttachments(newChartAttachments);
     setIsDirty(true);
-  }, []);
+
+    // Track upload method for consistency
+    if (uploadMethod) {
+      setChartUploadMethods(prev => ({
+        ...prev,
+        [imageType]: uploadMethod
+      }));
+      console.log(`📊 Tracked upload method for ${imageType}: ${uploadMethod}`);
+    }
+
+    // CRITICAL FIX: Immediately update the trade in the database if it's an existing trade
+    // BUT don't auto-save in upload-only mode to prevent modal from closing
+    if (mode === 'edit' && trade?.id && !isUploadOnlyMode) {
+      try {
+        const updatedTrade = {
+          ...trade,
+          chartAttachments: newChartAttachments
+        };
+
+        // Save the updated trade to database immediately
+        onSave(updatedTrade);
+        console.log(`✅ Chart ${imageType} uploaded and trade updated immediately`);
+      } catch (error) {
+        console.error('❌ Failed to update trade with chart attachment:', error);
+      }
+    } else if (isUploadOnlyMode) {
+      console.log(`📸 Chart ${imageType} uploaded in upload-only mode - will save when user manually submits`);
+    }
+  }, [chartAttachments, mode, trade, onSave, isUploadOnlyMode]);
+
+  const handleChartImageDeleted = React.useCallback(async (imageType: 'beforeEntry' | 'afterExit') => {
+    const deletedImage = chartAttachments[imageType];
+    const newAttachments = { ...chartAttachments };
+    delete newAttachments[imageType];
+
+    const updatedChartAttachments = {
+      ...newAttachments,
+      metadata: {
+        createdAt: chartAttachments.metadata?.createdAt || new Date(),
+        updatedAt: new Date(),
+        totalSize: Math.max(0, (chartAttachments.metadata?.totalSize || 0) - (deletedImage?.size || 0)),
+      }
+    };
+
+    // Update local state
+    setChartAttachments(updatedChartAttachments);
+    setIsDirty(true);
+
+    // Trigger chart refresh for Universal Chart Viewer
+    setChartRefreshTrigger(prev => prev + 1);
+    console.log('🔄 Chart deleted, triggering Universal Chart Viewer refresh');
+
+    // CRITICAL FIX: Immediately update the trade in the database if it's an existing trade
+    // BUT don't auto-save in upload-only mode to prevent modal from closing
+    if (mode === 'edit' && trade?.id && !isUploadOnlyMode) {
+      try {
+        const updatedTrade = {
+          ...trade,
+          chartAttachments: Object.keys(updatedChartAttachments).length > 0 ? updatedChartAttachments : undefined
+        };
+
+        // Save the updated trade to database immediately
+        onSave(updatedTrade);
+        console.log(`✅ Chart ${imageType} deleted and trade updated immediately`);
+      } catch (error) {
+        console.error('❌ Failed to update trade after chart deletion:', error);
+      }
+    } else if (isUploadOnlyMode) {
+      console.log(`🗑️ Chart ${imageType} deleted in upload-only mode - will save when user manually submits`);
+    }
+  }, [chartAttachments, mode, trade, onSave, isUploadOnlyMode]);
 
   const handleChartImageView = React.useCallback((chartImage: ChartImage, title: string) => {
     setChartViewerImage(chartImage);
@@ -733,7 +809,7 @@ import * as Papa from "papaparse"; // Centralized import
       console.error('💥 Error saving trade:', error);
       alert('Error saving trade. Please try again.');
     }
-  }, [formData, onSave, portfolioSize, getPortfolioSize]);
+  }, [formData, chartAttachments, onSave, portfolioSize, getPortfolioSize]);
 
   const modalMotionProps = React.useMemo(() => ({
         variants: {
@@ -1398,7 +1474,12 @@ import * as Papa from "papaparse"; // Centralized import
               <div className="flex justify-between items-center w-full">
                 <Tabs
                   selectedKey={activeTab}
-                  onSelectionChange={(key) => setActiveTab(key as string)}
+                  onSelectionChange={(key) => {
+                    // Prevent tab switching in upload-only mode
+                    if (!isUploadOnlyMode) {
+                      setActiveTab(key as string);
+                    }
+                  }}
                   aria-label="Options"
                   color="primary"
                   size="sm"
@@ -1408,9 +1489,23 @@ import * as Papa from "papaparse"; // Centralized import
                     tab: "px-4 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-200 data-[selected=true]:text-gray-900 dark:data-[selected=true]:text-white data-[hover=true]:bg-gray-100/80 dark:data-[hover=true]:bg-gray-700/50 rounded-lg transition-all duration-200"
                   }}
                 >
-                  <Tab key="basic" title="Basic" />
-                  <Tab key="advanced" title="Advanced" />
-                  <Tab key="charts" title="Charts" />
+                  <Tab
+                    key="basic"
+                    title="Basic"
+                    isDisabled={isUploadOnlyMode}
+                    className={isUploadOnlyMode ? "opacity-50 cursor-not-allowed" : ""}
+                  />
+                  <Tab
+                    key="advanced"
+                    title="Advanced"
+                    isDisabled={isUploadOnlyMode}
+                    className={isUploadOnlyMode ? "opacity-50 cursor-not-allowed" : ""}
+                  />
+                  <Tab
+                    key="charts"
+                    title="Charts"
+                    className={isUploadOnlyMode ? "ring-2 ring-primary-500" : ""}
+                  />
                 </Tabs>
 
 
@@ -1431,26 +1526,29 @@ import * as Papa from "papaparse"; // Centralized import
                 >
                   {activeTab === 'charts' ? (
                     <div className="space-y-6">
-                      <div className="text-center mb-6">
-                        <div className="flex items-center justify-between mb-4">
-                          <div>
-                            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
-                              Chart Attachments
-                            </h3>
-                            <p className="text-sm text-gray-600 dark:text-gray-400">
-                              Attach before and after chart images to document your trade setups and outcomes
-                            </p>
+                      {isUploadOnlyMode && (
+                        <div className="bg-primary-50 dark:bg-primary-950 border border-primary-200 dark:border-primary-800 rounded-lg p-3 mb-4">
+                          <div className="flex items-center gap-2">
+                            <Icon icon="lucide:upload" className="w-4 h-4 text-primary-600 dark:text-primary-400" />
+                            <span className="text-sm font-medium text-primary-700 dark:text-primary-300">
+                              Chart Upload Mode
+                            </span>
                           </div>
-                          <Button
-                            color="primary"
-                            variant="flat"
-                            size="sm"
-                            onPress={() => setIsUniversalViewerOpen(true)}
-                            startContent={<Icon icon="lucide:images" className="w-4 h-4" />}
-                          >
-                            Browse All Charts
-                          </Button>
+                          <p className="text-xs text-primary-600 dark:text-primary-400 mt-1">
+                            You can only upload charts in this mode. Other trade details are not editable.
+                          </p>
                         </div>
+                      )}
+                      <div className="flex justify-end mb-6">
+                        <Button
+                          color="primary"
+                          variant="flat"
+                          size="sm"
+                          onPress={() => setIsUniversalViewerOpen(true)}
+                          startContent={<Icon icon="lucide:images" className="w-4 h-4" />}
+                        >
+                          Browse All Charts
+                        </Button>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1458,7 +1556,7 @@ import * as Papa from "papaparse"; // Centralized import
                           tradeId={formData.id || 'new'}
                           imageType="beforeEntry"
                           currentImage={chartAttachments.beforeEntry}
-                          onImageUploaded={(chartImage) => handleChartImageUploaded('beforeEntry', chartImage)}
+                          onImageUploaded={(chartImage, uploadMethod) => handleChartImageUploaded('beforeEntry', chartImage, uploadMethod)}
                           onImageDeleted={() => handleChartImageDeleted('beforeEntry')}
                           disabled={false}
                         />
@@ -1467,9 +1565,10 @@ import * as Papa from "papaparse"; // Centralized import
                           tradeId={formData.id || 'new'}
                           imageType="afterExit"
                           currentImage={chartAttachments.afterExit}
-                          onImageUploaded={(chartImage) => handleChartImageUploaded('afterExit', chartImage)}
+                          onImageUploaded={(chartImage, uploadMethod) => handleChartImageUploaded('afterExit', chartImage, uploadMethod)}
                           onImageDeleted={() => handleChartImageDeleted('afterExit')}
                           disabled={false}
+                          suggestedUploadMethod={chartUploadMethods.beforeEntry}
                         />
                       </div>
                     </div>
@@ -1565,9 +1664,9 @@ import * as Papa from "papaparse"; // Centralized import
             </ModalBody>
             <Divider />
             <ModalFooter className="border-t border-gray-200 dark:border-gray-700 py-2 px-4 bg-white/80 dark:bg-transparent">
-              <Button 
-                variant="flat" 
-                onPress={onClose}
+              <Button
+                variant="flat"
+                onPress={() => onOpenChange(false)}
                 className="bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-300 dark:border-gray-600 h-8 min-w-20 text-xs text-gray-800 dark:text-gray-200"
               >
                 Cancel
@@ -1606,6 +1705,7 @@ import * as Papa from "papaparse"; // Centralized import
         onOpenChange={setIsUniversalViewerOpen}
         initialChartImage={chartViewerImage}
         initialTradeId={formData.id}
+        refreshTrigger={chartRefreshTrigger}
       />
     </Modal>
   );

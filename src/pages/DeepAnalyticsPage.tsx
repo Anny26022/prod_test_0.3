@@ -206,17 +206,42 @@ const DeepAnalyticsPage: React.FC = () => { // Renamed component
 
     // --- Calculations for Deep Analytics --- //
     const processedTrades = useMemo(() => {
-        if (!useCashBasis) return trades;
-        // For cash basis: flatten all expanded trades from _expandedTrades arrays
-        const expanded = trades.flatMap(trade =>
-            Array.isArray(trade._expandedTrades)
-                ? trade._expandedTrades.filter(t => t._cashBasisExit)
-                : (trade._cashBasisExit ? [trade] : [])
-        );
-        if (process.env.NODE_ENV === 'development') {
-            console.log('[CASH BASIS FIX] Using all expanded trades for analytics:', expanded.map(t => ({ id: t.id, pl: calculateTradePL(t, true) })));
+        if (!useCashBasis) {
+            return trades;
         }
-        return expanded;
+
+        // For cash basis: expand trades into individual exit entries
+        const expanded: Trade[] = [];
+
+        trades.forEach(trade => {
+            if (trade.positionStatus === 'Closed' || trade.positionStatus === 'Partial') {
+                const exits = getExitDatesWithFallback(trade);
+
+                if (exits.length > 0) {
+                    // Create separate entries for each exit
+                    exits.forEach((exit, index) => {
+                        const expandedTrade: Trade = {
+                            ...trade,
+                            id: `${trade.id}_exit_${index}`, // Unique ID for each exit
+                            _cashBasisExit: {
+                                date: exit.date,
+                                qty: exit.qty,
+                                price: exit.price
+                            }
+                        };
+                        expanded.push(expandedTrade);
+                    });
+                } else {
+                    // No exit data, include original trade
+                    expanded.push(trade);
+                }
+            } else {
+                // Open positions - include as-is
+                expanded.push(trade);
+            }
+        });
+
+        return expanded.length > 0 ? expanded : trades; // Fallback to original if expansion failed
     }, [trades, useCashBasis]);
 
     const analytics = useMemo(() => {
@@ -606,11 +631,10 @@ const DeepAnalyticsPage: React.FC = () => { // Renamed component
 
     // Filter trades by date range using accounting method-aware dates
     const filteredTrades = React.useMemo(() => {
-        // Use processedTrades directly; do not re-expand for cash basis
         let baseTrades = processedTrades;
-        // Only apply date filtering and accrual filtering
+
+        // For accrual basis, filter out invalid trades
         if (!useCashBasis) {
-            // For accrual basis, filter out trades with zero P/L only if they are truly empty/invalid
             baseTrades = baseTrades.filter(trade => {
                 // Include all trades that have meaningful data
                 if (trade.positionStatus === 'Open') {
@@ -624,17 +648,33 @@ const DeepAnalyticsPage: React.FC = () => { // Renamed component
                 return true; // Include other trades by default
             });
         }
+
         // Apply date filtering
         if (!globalStartDate && !globalEndDate) {
             return baseTrades;
         }
-        return baseTrades.filter(trade => {
-            const relevantDate = getTradeDateForAccounting(trade, useCashBasis);
-            const tradeDate = new Date(relevantDate.split('T')[0]);
-            if (globalStartDate && tradeDate < globalStartDate) return false;
-            if (globalEndDate && tradeDate > globalEndDate) return false;
-            return true;
+
+        const filtered = baseTrades.filter(trade => {
+            try {
+                const relevantDate = getTradeDateForAccounting(trade, useCashBasis);
+                if (!relevantDate) {
+                    return false;
+                }
+
+                const tradeDate = new Date(relevantDate.split('T')[0]);
+                if (isNaN(tradeDate.getTime())) {
+                    return false;
+                }
+
+                if (globalStartDate && tradeDate < globalStartDate) return false;
+                if (globalEndDate && tradeDate > globalEndDate) return false;
+                return true;
+            } catch (error) {
+                return false;
+            }
         });
+
+        return filtered;
     }, [processedTrades, globalStartDate, globalEndDate, useCashBasis]);
 
     // Calculate min and max trade dates for heatmap (within filtered trades) using accounting method-aware dates
@@ -642,17 +682,7 @@ const DeepAnalyticsPage: React.FC = () => { // Renamed component
     const minTradeDate = tradeDates.length > 0 ? tradeDates.reduce((a, b) => a < b ? a : b) : '';
     const maxTradeDate = tradeDates.length > 0 ? tradeDates.reduce((a, b) => a > b ? a : b) : '';
 
-    // Debug: Show which trades/exits are being summed for each date in the heatmap
-    if (process.env.NODE_ENV === 'development') {
-        const dateMap = {};
-        filteredTrades.forEach(trade => {
-            const date = getTradeDateForAccounting(trade, useCashBasis).split('T')[0];
-            const pl = calculateTradePL(trade, useCashBasis);
-            if (!dateMap[date]) dateMap[date] = [];
-            dateMap[date].push({ id: trade.id, pl });
-        });
-        console.log('[HEATMAP DEBUG] Trades/exits by date:', dateMap);
-    }
+
 
     // Ensure proper date format handling
     let heatmapStartDate = '';
