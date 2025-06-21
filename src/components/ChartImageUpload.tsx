@@ -430,17 +430,18 @@ export const ChartImageUpload: React.FC<ChartImageUploadProps> = ({
               />
               <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity rounded-lg flex items-center justify-center gap-2">
                 <Button
-                  variant="solid"
-                  color="primary"
+                  isIconOnly
+                  variant="flat"
                   size="sm"
                   onPress={() => {
                     setUploadMethod('file');
                     openFileDialog();
                   }}
                   isDisabled={disabled}
-                  startContent={<Icon icon="lucide:upload" className="w-4 h-4" />}
+                  className="w-6 h-6 min-w-6 rounded-md bg-black/90 hover:bg-black text-white border-0 shadow-sm hover:shadow-md transition-all duration-200 disabled:opacity-50"
+                  aria-label="Replace chart image"
                 >
-                  Replace
+                  <Icon icon="lucide:upload" className="w-3 h-3" />
                 </Button>
               </div>
             </motion.div>
@@ -555,16 +556,19 @@ export const ChartImageUpload: React.FC<ChartImageUploadProps> = ({
                       </div>
                     </div>
                   ) : (
-                    <Button
-                      color="primary"
-                      variant="solid"
-                      onPress={handleUrlUpload}
-                      isDisabled={disabled || !tradingViewUrl.trim()}
-                      startContent={<Icon icon="lucide:download" className="w-4 h-4" />}
-                      className="w-full"
-                    >
-                      Download & Upload Chart
-                    </Button>
+                    <div className="flex justify-center">
+                      <Button
+                        isIconOnly
+                        variant="flat"
+                        size="sm"
+                        onPress={handleUrlUpload}
+                        isDisabled={disabled || !tradingViewUrl.trim()}
+                        className="w-6 h-6 min-w-6 rounded-lg bg-black/90 hover:bg-black text-white border-0 shadow-md hover:shadow-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                        aria-label="Upload chart from URL"
+                      >
+                        <Icon icon="lucide:upload" className="w-3 h-3" />
+                      </Button>
+                    </div>
                   )}
                 </div>
               )}
