@@ -1,0 +1,78 @@
+/* Smooth animations for accounting method toggle */
+
+/* Hardware acceleration for smooth animations */
+.accounting-toggle-wrapper {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+/* Smooth switch animations */
+.smooth-switch {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform, background-color;
+}
+
+.smooth-switch-thumb {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform, box-shadow;
+}
+
+/* Smooth text transitions */
+.smooth-text-transition {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: color, transform;
+}
+
+/* Prevent layout shifts during animations */
+.accounting-method-container {
+  contain: layout style paint;
+}
+
+/* Optimize icon transitions */
+.smooth-icon {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform, opacity;
+}
+
+/* Reduce motion for users who prefer it */
+@media (prefers-reduced-motion: reduce) {
+  .smooth-switch,
+  .smooth-switch-thumb,
+  .smooth-text-transition,
+  .smooth-icon {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* GPU acceleration for better performance */
+.gpu-accelerated {
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+/* Smooth press feedback */
+.switch-press-feedback {
+  transition: transform 0.1s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.switch-press-feedback:active {
+  transform: scale(0.98);
+}
+
+/* Smooth focus states */
+.smooth-focus:focus-visible {
+  outline: 2px solid hsl(var(--heroui-primary));
+  outline-offset: 2px;
+  border-radius: 8px;
+  transition: outline 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Optimized text rendering */
+.smooth-text {
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
